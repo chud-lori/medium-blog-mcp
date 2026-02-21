@@ -8,15 +8,22 @@ Tools:
 """
 
 import sys
+import io
+import os
 from pathlib import Path
 
-# Redirect stdout → stderr immediately so library banners
-# (sentence-transformers, tqdm, etc.) never pollute the JSON-RPC channel.
-sys.stdout = sys.stderr
+# MCP communicates over stdout (JSON-RPC), so we must NOT permanently redirect it.
+# Instead, temporarily mute stdout during noisy library imports, then restore it.
+_real_stdout = sys.stdout
+sys.stdout = io.StringIO()
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from mcp.server.fastmcp import FastMCP
 import chromadb
 from sentence_transformers import SentenceTransformer
+
+# Restore stdout so MCP JSON-RPC transport works
+sys.stdout = _real_stdout
 
 from parser import parse
 
@@ -39,7 +46,13 @@ def _rag():
     global _model, _collection
     if _model is None:
         sys.stderr.write("⏳ Loading embedding model…\n")
+
+        # Mute stdout during model load (prints loading bars)
+        _save = sys.stdout
+        sys.stdout = io.StringIO()
         _model = SentenceTransformer("all-MiniLM-L6-v2")
+        sys.stdout = _save
+
         client = chromadb.PersistentClient(path=str(DB_DIR))
         _collection = client.get_collection(name=COLLECTION)
         sys.stderr.write(f"✅ Loaded — {_collection.count()} chunks ready\n")
