@@ -27,7 +27,7 @@ DB_DIR = ROOT / "vector_db"
 COLLECTION = "blog_posts"
 
 # ── MCP Server ───────────────────────────────────────────────────────────────
-mcp = FastMCP("lori-blog")
+mcp = FastMCP("lori-medium-blog")
 
 # ── Lazy-loaded RAG components ───────────────────────────────────────────────
 _model = None

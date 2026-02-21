@@ -56,7 +56,7 @@ Copy the contents of `mcp_config.json` into your MCP client settings.
 ```json
 {
   "mcpServers": {
-    "lori-blog": {
+    "lori-medium-blog": {
       "command": "/path/to/your/python3",
       "args": ["/path/to/this/repo/server.py"]
     }

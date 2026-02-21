@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lori-blog-mcp"
+name = "lori-medium-blog"
 version = "1.0.0"
 description = "MCP server for semantic search across Lori's blog"
 authors = [{ name = "Lori" }]
