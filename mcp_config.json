@@ -1,0 +1,10 @@
+{
+    "mcpServers": {
+        "lori-blog": {
+            "command": "/path/to/your/python3",
+            "args": [
+                "/path/to/this/repo/server.py"
+            ]
+        }
+    }
+}

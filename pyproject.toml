@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lori-blog-mcp"
+version = "1.0.0"
+description = "MCP server for semantic search across Lori's blog"
+authors = [{ name = "Lori" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=0.9.0",
+    "python-dotenv>=1.0.0",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+    "beautifulsoup4",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "ruff>=0.1.0"]

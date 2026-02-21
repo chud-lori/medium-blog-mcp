@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+venv/
+.venv/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Generated (rebuild with: python build_index.py)
+vector_db/
+.sync_state.json
+
+# Local config (has real paths)
+local.mcp_config.json
+
+# Data archives
+*.zip
+*.tar.gz
