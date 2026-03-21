@@ -1,9 +1,9 @@
 {
     "mcpServers": {
         "lori-medium-blog": {
-            "command": "/path/to/your/python3",
+            "command": "/Users/nurchudlori/.pyenv/versions/mcp/bin/python3",
             "args": [
-                "/path/to/this/repo/server.py"
+                "/Users/nurchudlori/Projects/medium-blog-mcp/server.py"
             ]
         }
     }

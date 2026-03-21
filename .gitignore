@@ -29,3 +29,6 @@ local.mcp_config.json
 # Data archives
 *.zip
 *.tar.gz
+
+# Scraped content cache (regenerated automatically)
+data/scrape_cache.json
