@@ -32,3 +32,6 @@ local.mcp_config.json
 
 # Scraped content cache (regenerated automatically)
 data/scrape_cache.json
+
+# Medium export HTML files (extracted from ZIP by build_index.py --extract-zip)
+data/posts/
