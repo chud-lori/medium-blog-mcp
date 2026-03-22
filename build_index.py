@@ -3,22 +3,28 @@ build_index.py — Build the ChromaDB vector index from local HTML exports or by
 
 Two sources are supported:
   local   — Read from downloaded Medium export files in data/posts/
-             (complete: all 89+ articles, works offline, no Cloudflare issues)
+             (complete: all articles, works offline, no Cloudflare issues)
   scrape  — Fetch live from Medium via sitemap + RSS feed
              (only retrieves the 10 most recent articles with content)
 
+If a Medium export ZIP is found in data/, it will be offered for extraction
+before indexing — this replaces data/posts/ with the fresh export content.
+
 Usage:
-    python build_index.py                # prompt for source, incremental
+    python build_index.py                  # auto-detect zip, prompt for source
     python build_index.py --source local   # use local HTML files
     python build_index.py --source scrape  # use live scraping
-    python build_index.py --force        # wipe and rebuild from scratch
-    python build_index.py --audit        # print index stats, no changes
+    python build_index.py --force          # wipe and rebuild from scratch
+    python build_index.py --audit          # print index stats, no changes
+    python build_index.py --extract-zip    # extract zip only, no indexing
 """
 
 import argparse
 import hashlib
 import json
+import shutil
 import sys
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -71,6 +77,54 @@ def url_id(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:16]
 
 
+def find_zip() -> Optional[Path]:
+    """Return the newest Medium export ZIP in data/, or None."""
+    zips = sorted((ROOT / "data").glob("medium-export-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return zips[0] if zips else None
+
+
+def extract_zip(zip_path: Path) -> int:
+    """Extract posts/ from the Medium export ZIP into data/posts/.
+
+    Deletes the existing data/posts/ directory first, then extracts only
+    the posts/*.html files from the ZIP.  Returns the number of files extracted.
+    """
+    print(f"\n📦 ZIP: {zip_path.name}")
+
+    # Wipe existing posts dir
+    if POSTS_DIR.exists():
+        print(f"🗑️  Removing existing {POSTS_DIR} …")
+        shutil.rmtree(POSTS_DIR)
+    POSTS_DIR.mkdir(parents=True)
+
+    count = 0
+    with zipfile.ZipFile(zip_path) as zf:
+        post_entries = [n for n in zf.namelist() if n.startswith("posts/") and n.endswith(".html")]
+        print(f"📄 Extracting {len(post_entries)} HTML files…")
+        for entry in post_entries:
+            filename = Path(entry).name          # strip "posts/" prefix
+            target   = POSTS_DIR / filename
+            target.write_bytes(zf.read(entry))
+            count += 1
+
+    print(f"✅ Extracted {count} files → {POSTS_DIR}\n")
+    return count
+
+
+def maybe_extract_zip() -> bool:
+    """If a ZIP exists in data/, offer to extract it. Returns True if extracted."""
+    zip_path = find_zip()
+    if not zip_path:
+        return False
+
+    print(f"\n📦 Found Medium export ZIP: {zip_path.name}")
+    choice = input("Extract and replace data/posts/ with this ZIP? [y/N]: ").strip().lower()
+    if choice in ("y", "yes"):
+        extract_zip(zip_path)
+        return True
+    return False
+
+
 def choose_source(source_arg: Optional[str]) -> str:
     """Return 'local' or 'scrape', prompting the user if not specified."""
     if source_arg in ("local", "scrape"):
@@ -95,6 +149,7 @@ def choose_source(source_arg: Optional[str]) -> str:
 
 def build_index(force: bool = False, source: Optional[str] = None):
     """Fetch all articles and store embeddings in ChromaDB."""
+    maybe_extract_zip()
     source = choose_source(source)
     print(f"\n📂 Source: {source}\n")
 
@@ -307,11 +362,19 @@ if __name__ == "__main__":
                     help="Wipe and rebuild entire index from scratch")
     ap.add_argument("--audit",       action="store_true",
                     help="Print index stats without making changes")
+    ap.add_argument("--extract-zip", action="store_true",
+                    help="Extract the Medium export ZIP into data/posts/ and exit (no indexing)")
     ap.add_argument("--incremental", action="store_true",
                     help="Alias for default behaviour (skip already-indexed articles)")
     args = ap.parse_args()
 
     if args.audit:
         audit()
+    elif args.extract_zip:
+        z = find_zip()
+        if z:
+            extract_zip(z)
+        else:
+            print("❌ No medium-export-*.zip found in data/")
     else:
         build_index(force=args.force, source=args.source)
