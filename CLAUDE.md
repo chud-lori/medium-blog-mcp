@@ -1,13 +1,22 @@
 # medium-blog-mcp — Claude Code Guide
 
+## Git policy
+
+> **Only commit. Never push.**
+>
+> All work stays local. Do not run `git push` under any circumstances.
+> Create commits freely, but the remote is off-limits.
+
+---
+
 ## Project overview
 
 MCP (Model Context Protocol) server that exposes **Lori's Medium blog**
 (`https://chud-lori.medium.com/`) as a searchable knowledge source for Claude.
 
-Articles are fetched live from Medium and stored in a local ChromaDB vector
-database so Claude can list, read, and semantically search them without
-hitting Medium on every request.
+Articles are fetched from Medium and stored in a local ChromaDB vector database
+so Claude can list, read, and semantically search them without hitting Medium
+on every request.
 
 ---
 
@@ -19,12 +28,15 @@ This project **must** use the `mcp` pyenv virtualenv (Python 3.11.3).
 # Activate before running anything
 pyenv activate mcp        # or: PYENV_VERSION=mcp pyenv exec python ...
 
-# Python binary (used in mcp_config.json)
+# Absolute Python binary (used in mcp_config.json)
 /Users/nurchudlori/.pyenv/versions/mcp/bin/python3
 ```
 
-The `.python-version` file in the repo root pins the project to `mcp`
-automatically when you `cd` into the directory with pyenv-virtualenv.
+The `.python-version` file pins the project to `mcp` automatically when you
+`cd` into the directory with pyenv-virtualenv active.
+
+Always prefix Python/pip commands with `PYENV_VERSION=mcp pyenv exec` or
+activate the env first.
 
 ---
 
@@ -33,8 +45,13 @@ automatically when you `cd` into the directory with pyenv-virtualenv.
 ```bash
 pyenv activate mcp
 pip install -r requirements.txt
-python -m playwright install chromium   # installs headless Chromium
-python build_index.py                   # scrape & index all articles
+python build_index.py        # scrape & index all retrievable articles
+```
+
+Playwright's Chromium browser is **not needed** for the current architecture
+(sitemap + RSS only). If you re-add Playwright scraping, install it with:
+```bash
+python -m playwright install chromium
 ```
 
 ---
@@ -42,34 +59,58 @@ python build_index.py                   # scrape & index all articles
 ## Architecture
 
 ```
-Medium RSS feed  ──────────────────────────┐
-  (httpx, no bot detection)                │
-                                           ▼
-Medium profile page  ──────────────────► Merger  ──► post list
-  (Playwright sync, catches extras)        │
-                                           │
-                                           ▼
-                                     scrape_cache.json   (TTL cache)
-                                           │
-                                           ▼
-                                      ChromaDB            (vector_db/)
-                                  (sentence-transformers)
-                                           │
-                                           ▼
-                                       server.py  ──► Claude (MCP)
+Sitemap  (all article URLs, no bot detection)  ──┐
+  httpx GET, XML parse                            │
+                                                  ▼
+RSS feed (content for ~10 recent posts)  ──────► Merger  ──► post list
+  httpx GET, XML + HTML parse                     │
+                                                  │
+                                                  ▼
+                                          scrape_cache.json   (TTL cache)
+                                                  │
+                                                  ▼
+                                           ChromaDB            (vector_db/)
+                                    paraphrase-multilingual-
+                                       MiniLM-L12-v2
+                                                  │
+                                                  ▼
+                                            server.py  ──► Claude (MCP)
 ```
 
 ### Data sources
 
-| Source | What it provides | Bot-detection risk |
-|--------|-----------------|-------------------|
-| RSS feed (`/feed`) | Full article HTML for ~9 posts | None |
-| Profile page (Playwright) | Title + URL for all 10 posts | Low |
-| Playwright article fetch | Full content for non-RSS posts | High (Cloudflare) |
+| Source | Provides | Bot-detection |
+|--------|----------|--------------|
+| Sitemap (`/sitemap/sitemap.xml`) | All article URLs + lastmod dates | None |
+| RSS feed (`/feed`) | Full content for ≤10 most recent posts | None |
+| Article pages (direct) | **BLOCKED** — Cloudflare bot detection | High |
+| Medium GraphQL (`_/graphql`) | **BLOCKED** — POST requests blocked by Cloudflare | High |
 
-Member-only/paywalled articles are absent from the RSS feed and
-are blocked by Cloudflare when scraped directly. They are listed
-(with a 🔒 flag) but their content may not be retrievable.
+**Why RSS is limited to 10 posts**: Medium hard-caps the RSS feed at the
+10 most recent items. This is a platform limitation. The sitemap provides
+the complete URL list (57+ articles) but without content for older posts.
+
+**Cloudflare situation**: Direct article pages and GraphQL POST requests are
+blocked by Cloudflare even from headless Playwright. Only GET requests to
+the sitemap and RSS endpoints work reliably without authentication.
+
+---
+
+## Embedding model
+
+**`paraphrase-multilingual-MiniLM-L12-v2`** (sentence-transformers)
+
+Chosen because:
+- Blog content is mixed **Indonesian + English** — a multilingual model is essential
+- Supports 50+ languages
+- ~470 MB on disk — lightweight enough for local use
+- Strong semantic similarity for literary/narrative text
+
+The previous model (`all-MiniLM-L6-v2`, 80 MB) was English-only and gave
+poor results for Indonesian text.
+
+If you change the model, delete `vector_db/` and re-run `build_index.py`
+to rebuild embeddings with the new model.
 
 ---
 
@@ -78,36 +119,38 @@ are blocked by Cloudflare when scraped directly. They are listed
 | File | Purpose |
 |------|---------|
 | `server.py` | FastMCP server; exposes 3 tools to Claude |
-| `scraper.py` | RSS fetching + Playwright profile/article scraping |
-| `build_index.py` | CLI tool: fetch all articles → embed → store in ChromaDB |
+| `scraper.py` | Sitemap + RSS fetching, JSON caching |
+| `build_index.py` | CLI: fetch articles → chunk → embed → store in ChromaDB |
 | `vector_db/` | ChromaDB persistent storage (git-ignored) |
-| `data/scrape_cache.json` | JSON cache of scraped content (git-ignored) |
+| `data/scrape_cache.json` | JSON cache of fetched content (git-ignored) |
 | `.sync_state.json` | Tracks which articles are indexed (git-ignored) |
 | `mcp_config.json` | Claude Desktop MCP config template |
+| `parser.py` | Legacy HTML parser for local export files (unused) |
+| `build_index.py` | Indexer (replaces old file-based version) |
 
 ---
 
 ## MCP tools
 
 ### `list_posts()`
-Fetches the merged article list (RSS + profile page).
-Cached for 6 hours. Shows which posts are indexed (📚) and which
-are member-only (🔒).
+Returns the complete article list from the sitemap (all 57+ articles),
+enriched with titles and dates from the RSS feed for recent posts.
+Shows 📚 (indexed in vector store) and 📄 (older post, content may be unavailable).
+Cached 6 hours.
 
 ### `read_post(url)`
-Returns the full text of an article.
-Priority: **vector store → RSS cache → live scrape**.
-Automatically indexes the post if it was fetched live.
+Returns full article text.
+Priority: **vector store → RSS cache**.
+Automatically indexes the post if fetched live.
+Older articles (not in RSS) will return an unavailability message.
 
 ### `search_posts(query, limit=5)`
-Semantic search over the ChromaDB index.
+Semantic search over ChromaDB.
 Requires `build_index.py` to have been run first.
 
 ---
 
 ## build_index.py
-
-Run this once to pre-index all articles, or again to pick up new posts.
 
 ```bash
 python build_index.py              # incremental (skip already-indexed)
@@ -115,57 +158,59 @@ python build_index.py --force      # wipe and rebuild everything
 python build_index.py --audit      # inspect what is currently indexed
 ```
 
-The indexer:
-1. Calls `scraper.get_post_list()` to get the merged article list.
-2. For each article, calls `scraper.get_post(url)` — returns content from
-   the RSS cache for the 9 accessible posts.
-3. Chunks the text (≤800 chars, paragraph-aware), embeds with
-   `all-MiniLM-L6-v2`, and stores in ChromaDB.
-4. Writes `.sync_state.json` so re-runs skip already-indexed articles.
+Steps:
+1. Fetches all article URLs from sitemap
+2. Fetches content for each via `scraper.get_post()` (RSS cache for recent 10)
+3. Older articles that have no RSS content are skipped with a warning
+4. Chunks text (≤800 chars, paragraph-aware), embeds, stores in ChromaDB
+5. Writes `.sync_state.json` to skip re-indexing unchanged articles
 
 ---
 
 ## Caching
 
-| Cache key | TTL | Location |
-|-----------|-----|----------|
-| `post_list` | 6 hours | `data/scrape_cache.json` |
-| `rss_feed` | 6 hours | `data/scrape_cache.json` |
-| `post:<url>` | 7 days | `data/scrape_cache.json` |
+| Cache key | TTL | Notes |
+|-----------|-----|-------|
+| `post_list` | 6 hours | Merged sitemap + RSS metadata |
+| `rss_feed` | 6 hours | Full HTML content for ≤10 recent posts |
+| `sitemap` | 6 hours | All article URLs from sitemap |
+| `post:<url>` | 7 days | Full text of a specific post |
 
-To force a fresh fetch, delete `data/scrape_cache.json` and re-run.
+Delete `data/scrape_cache.json` to force a full refresh.
 
 ---
 
 ## Adding Claude Desktop integration
 
-Copy the contents of `mcp_config.json` into your Claude Desktop config
-(`~/Library/Application Support/Claude/claude_desktop_config.json`), then
-restart Claude Desktop.
+Copy `mcp_config.json` into your Claude Desktop config:
+`~/Library/Application Support/Claude/claude_desktop_config.json`
+
+Then restart Claude Desktop.
+
+---
+
+## Known limitations
+
+1. **Content for older posts unavailable**: Medium caps RSS at 10 items.
+   Direct article pages are blocked by Cloudflare from headless browsers.
+   Articles published before the rolling 10-post RSS window have no content.
+
+2. **Member-only articles**: Paywall articles may also be absent from RSS.
+   They appear in the sitemap URL list but content cannot be retrieved.
+
+3. **Sitemap staleness**: Medium's sitemap may lag by hours after a new post.
+   Run `build_index.py` after publishing to pick up new content quickly.
 
 ---
 
 ## Dependencies
 
 ```
-mcp>=0.9.0                # Model Context Protocol / FastMCP
-chromadb>=0.4.0           # Vector database
-sentence-transformers>=2.2.0  # Embedding model (all-MiniLM-L6-v2)
-httpx>=0.24.0             # HTTP client for RSS fetching
-beautifulsoup4>=4.12.0    # HTML → plain text parsing
-playwright>=1.40.0        # Headless browser (profile page + fallback)
-python-dotenv>=1.0.0      # .env file support
+mcp>=0.9.0                        # Model Context Protocol / FastMCP
+chromadb>=0.4.0                   # Vector database
+sentence-transformers>=2.2.0      # paraphrase-multilingual-MiniLM-L12-v2
+httpx>=0.24.0                     # HTTP client (sitemap + RSS)
+beautifulsoup4>=4.12.0            # HTML → plain text
+playwright>=1.40.0                # (kept as dep, not used in current flow)
+python-dotenv>=1.0.0              # .env support
 ```
-
----
-
-## Known limitations
-
-- **Member-only articles** (🔒): absent from RSS, blocked by Cloudflare when
-  scraped. Currently only title/URL are available for these.
-- **Scrolling Medium pages**: scrolling to the bottom of a Medium page triggers
-  a 500 error. `_scrape_profile_page()` evaluates the DOM before scrolling to
-  avoid this.
-- **Cloudflare on article pages**: individual article URLs go through
-  Cloudflare bot-detection. The Playwright fallback may fail. The RSS feed
-  sidesteps this entirely for publicly accessible posts.

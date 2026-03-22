@@ -2,9 +2,13 @@
 server.py — MCP server exposing Lori's Medium blog as searchable knowledge.
 
 Tools:
-    list_posts   — list all articles from Medium (RSS + profile page merge)
-    read_post    — return full text of a post (vector store → RSS cache → live scrape)
+    list_posts   — list all articles from Medium (sitemap + RSS merge)
+    read_post    — return full text of a post (vector store → RSS cache)
     search_posts — semantic search across indexed posts
+
+Embedding model: paraphrase-multilingual-MiniLM-L12-v2
+  Chosen because blog content is Indonesian + English.
+  Supports 50+ languages, ~470 MB, strong semantic similarity performance.
 """
 
 import sys
@@ -45,7 +49,11 @@ def _rag():
         sys.stderr.write("⏳ Loading embedding model…\n")
         _save = sys.stdout
         sys.stdout = io.StringIO()
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        # paraphrase-multilingual-MiniLM-L12-v2:
+        #   • 470 MB on disk (vs 80 MB for all-MiniLM-L6-v2)
+        #   • 50+ languages including Indonesian — essential for this blog
+        #   • Strong semantic similarity for blog / literary text
+        _model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
         sys.stdout = _save
 
         client = chromadb.PersistentClient(path=str(DB_DIR))
@@ -107,15 +115,19 @@ def list_posts() -> str:
         except Exception:
             pass
 
-    lines = [f"Found {len(posts)} posts on https://chud-lori.medium.com/:\n"]
+    total_in_rss = sum(1 for p in posts if p["in_rss"])
+    lines = [
+        f"Found {len(posts)} posts on https://chud-lori.medium.com/",
+        f"({total_in_rss} with retrievable content via RSS, rest listed from sitemap)\n",
+    ]
     for i, p in enumerate(posts, 1):
-        rss_flag     = "  " if p["in_rss"] else "🔒"
+        content_flag = "  " if p["in_rss"] else "📄"
         indexed_flag = "📚" if p["url"] in indexed_urls else "  "
-        pub = f"  [{p['pub_date'][:16]}]" if p["pub_date"] else ""
-        lines.append(f"{i:3d}. {rss_flag}{indexed_flag} {p['title']}{pub}")
+        pub = f"  [{p['pub_date'][:16]}]" if p.get("pub_date") else (f"  [{p.get('lastmod','')}]" if p.get("lastmod") else "")
+        lines.append(f"{i:3d}. {content_flag}{indexed_flag} {p['title']}{pub}")
         lines.append(f"       {p['url']}")
 
-    lines.append("\nLegend: 📚 = indexed (searchable)  🔒 = member-only (may lack content)")
+    lines.append("\nLegend: 📚 = indexed (searchable)  📄 = older post (content not in RSS, may be unavailable)")
     return "\n".join(lines)
 
 

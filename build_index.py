@@ -75,8 +75,10 @@ def build_index(force: bool = False):
     posts_meta = scraper.get_post_list()
     print(f"   Found {len(posts_meta)} articles\n")
 
-    print("🚀 Loading embedding model…")
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    print("🚀 Loading embedding model (paraphrase-multilingual-MiniLM-L12-v2)…")
+    # Multilingual model chosen because content is Indonesian + English.
+    # ~470 MB; supports 50+ languages with strong semantic similarity.
+    model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
     client = chromadb.PersistentClient(path=str(DB_DIR))
 
     if force:
