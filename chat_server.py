@@ -177,9 +177,9 @@ def stream_gemini(messages: list[dict], context: str) -> Iterator[str]:
     except ImportError:
         yield "Error: `google-genai` package not installed. Run: pip install google-genai"
         return
-    key = os.getenv("GOOGLE_API_KEY", "")
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
     if not key:
-        yield "Error: GOOGLE_API_KEY not set in .env"
+        yield "Error: GEMINI_API_KEY not set in .env"
         return
 
     client     = genai.Client(api_key=key)
