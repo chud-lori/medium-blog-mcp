@@ -172,31 +172,34 @@ def stream_openai(messages: list[dict], context: str) -> Iterator[str]:
 
 def stream_gemini(messages: list[dict], context: str) -> Iterator[str]:
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
     except ImportError:
-        yield "Error: `google-generativeai` package not installed. Run: pip install google-generativeai"
+        yield "Error: `google-genai` package not installed. Run: pip install google-genai"
         return
     key = os.getenv("GOOGLE_API_KEY", "")
     if not key:
         yield "Error: GOOGLE_API_KEY not set in .env"
         return
 
-    genai.configure(api_key=key)
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=f"{SYSTEM_PROMPT}\n\n<articles>\n{context}\n</articles>",
+    client     = genai.Client(api_key=key)
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    system     = f"{SYSTEM_PROMPT}\n\n<articles>\n{context}\n</articles>"
+
+    # Build contents list from full history
+    contents = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
+
+    config = types.GenerateContentConfig(
+        system_instruction=system,
+        max_output_tokens=2048,
     )
 
-    # Convert history (all but the last user message)
-    history = []
-    for msg in messages[:-1]:
-        role = "user" if msg["role"] == "user" else "model"
-        history.append({"role": role, "parts": [msg["content"]]})
-
-    chat = model.start_chat(history=history)
-    response = chat.send_message(messages[-1]["content"], stream=True)
-    for chunk in response:
+    for chunk in client.models.generate_content_stream(
+        model=model_name, contents=contents, config=config
+    ):
         if chunk.text:
             yield chunk.text
 

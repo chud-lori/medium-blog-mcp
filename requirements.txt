@@ -19,7 +19,7 @@ pydantic>=2.0.0
 # LLM providers (install whichever you use)
 anthropic>=0.25.0           # for LLM_PROVIDER=claude
 openai>=1.0.0               # for LLM_PROVIDER=openai
-google-generativeai>=0.5.0  # for LLM_PROVIDER=gemini
+google-genai>=1.0.0         # for LLM_PROVIDER=gemini
 
 # Utilities
 python-dotenv>=1.0.0
