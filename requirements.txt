@@ -1,7 +1,25 @@
+# MCP server
 mcp>=0.9.0
-python-dotenv>=1.0.0
-chromadb>=0.4.0
-sentence-transformers>=2.2.0
+
+# Scraping & parsing
 httpx>=0.24.0
 beautifulsoup4>=4.12.0
-playwright>=1.40.0
+playwright>=1.40.0          # kept as dep; not used in current scraping flow
+
+# Vector DB & embeddings
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+tqdm>=4.0.0
+
+# Chat web server
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.0.0
+
+# LLM providers (install whichever you use)
+anthropic>=0.25.0           # for LLM_PROVIDER=claude
+openai>=1.0.0               # for LLM_PROVIDER=openai
+google-generativeai>=0.5.0  # for LLM_PROVIDER=gemini
+
+# Utilities
+python-dotenv>=1.0.0
