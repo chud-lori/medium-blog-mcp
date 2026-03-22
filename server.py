@@ -95,39 +95,58 @@ def _read_post_from_index(url: str) -> str | None:
 def list_posts() -> str:
     """List every article published on Lori's Medium profile.
 
-    Merges the RSS feed with a live profile-page scrape so that member-only
-    articles absent from the RSS are also listed (marked with 🔒).
+    Merges the sitemap (live) with locally-indexed articles so that all
+    89+ articles are shown, including those not in the Medium sitemap.
     Results are cached for 6 hours.
     """
-    posts = get_scraper().get_post_list()
-    if not posts:
+    scraper_posts = get_scraper().get_post_list()
+
+    _, col = _rag()
+    indexed_meta: dict[str, dict] = {}
+    if col.count() > 0:
+        try:
+            all_meta = col.get(include=["metadatas"])["metadatas"]
+            for m in all_meta:
+                url = m.get("url", "")
+                if url and url not in indexed_meta:
+                    indexed_meta[url] = m
+        except Exception:
+            pass
+
+    # Build merged list: scraper posts + any locally-indexed posts not in scraper
+    scraper_urls = {p["url"] for p in scraper_posts}
+    extra_posts: list[dict] = []
+    for url, m in indexed_meta.items():
+        if url not in scraper_urls:
+            extra_posts.append({
+                "title":    m.get("title", url),
+                "url":      url,
+                "pub_date": m.get("pub_date", ""),
+                "in_rss":   False,
+            })
+
+    extra_posts.sort(key=lambda x: x.get("pub_date", ""), reverse=True)
+    all_posts = scraper_posts + extra_posts
+
+    if not all_posts:
         return (
             "No posts found. Medium may be temporarily unavailable.\n"
             "Try again in a moment."
         )
 
-    _, col = _rag()
-    indexed_urls: set[str] = set()
-    if col.count() > 0:
-        try:
-            all_meta = col.get(include=["metadatas"])["metadatas"]
-            indexed_urls = {m["url"] for m in all_meta}
-        except Exception:
-            pass
-
-    total_in_rss = sum(1 for p in posts if p["in_rss"])
+    total_in_rss = sum(1 for p in scraper_posts if p["in_rss"])
     lines = [
-        f"Found {len(posts)} posts on https://chud-lori.medium.com/",
-        f"({total_in_rss} with retrievable content via RSS, rest listed from sitemap)\n",
+        f"Found {len(all_posts)} posts ({len(scraper_posts)} from sitemap, {len(extra_posts)} from local index)",
+        f"({total_in_rss} with live content via RSS)\n",
     ]
-    for i, p in enumerate(posts, 1):
-        content_flag = "  " if p["in_rss"] else "📄"
-        indexed_flag = "📚" if p["url"] in indexed_urls else "  "
-        pub = f"  [{p['pub_date'][:16]}]" if p.get("pub_date") else (f"  [{p.get('lastmod','')}]" if p.get("lastmod") else "")
+    for i, p in enumerate(all_posts, 1):
+        content_flag = "  " if p.get("in_rss") else "📄"
+        indexed_flag = "📚" if p["url"] in indexed_meta else "  "
+        pub = f"  [{p['pub_date'][:10]}]" if p.get("pub_date") else ""
         lines.append(f"{i:3d}. {content_flag}{indexed_flag} {p['title']}{pub}")
         lines.append(f"       {p['url']}")
 
-    lines.append("\nLegend: 📚 = indexed (searchable)  📄 = older post (content not in RSS, may be unavailable)")
+    lines.append("\nLegend: 📚 = indexed (searchable)  📄 = older/local post")
     return "\n".join(lines)
 
 

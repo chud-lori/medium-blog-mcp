@@ -1,11 +1,16 @@
 """
-build_index.py — Build the ChromaDB vector index by scraping Medium live.
+build_index.py — Build the ChromaDB vector index from local HTML exports or by scraping Medium live.
 
-Replaces the old file-based indexer. Articles are fetched via the RSS feed
-(or Playwright fallback) and their text is chunked and embedded.
+Two sources are supported:
+  local   — Read from downloaded Medium export files in data/posts/
+             (complete: all 89+ articles, works offline, no Cloudflare issues)
+  scrape  — Fetch live from Medium via sitemap + RSS feed
+             (only retrieves the 10 most recent articles with content)
 
 Usage:
-    python build_index.py                # index all articles (skip already-indexed)
+    python build_index.py                # prompt for source, incremental
+    python build_index.py --source local   # use local HTML files
+    python build_index.py --source scrape  # use live scraping
     python build_index.py --force        # wipe and rebuild from scratch
     python build_index.py --audit        # print index stats, no changes
 """
@@ -21,6 +26,7 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+from parser import get_local_posts, POSTS_DIR
 from scraper import get_scraper
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -65,15 +71,32 @@ def url_id(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:16]
 
 
+def choose_source(source_arg: Optional[str]) -> str:
+    """Return 'local' or 'scrape', prompting the user if not specified."""
+    if source_arg in ("local", "scrape"):
+        return source_arg
+
+    print("Select indexing source:")
+    print("  [1] local  — Read from downloaded HTML files in data/posts/")
+    print("               (complete: all articles, works offline)")
+    print("  [2] scrape — Fetch live from Medium via sitemap + RSS")
+    print("               (only the 10 most recent articles have content)")
+    print()
+    while True:
+        choice = input("Choice [1/2] or [local/scrape]: ").strip().lower()
+        if choice in ("1", "local"):
+            return "local"
+        if choice in ("2", "scrape"):
+            return "scrape"
+        print("Please enter 1, 2, 'local', or 'scrape'.")
+
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-def build_index(force: bool = False):
+def build_index(force: bool = False, source: Optional[str] = None):
     """Fetch all articles and store embeddings in ChromaDB."""
-    scraper = get_scraper()
-
-    print("📋 Fetching article list…")
-    posts_meta = scraper.get_post_list()
-    print(f"   Found {len(posts_meta)} articles\n")
+    source = choose_source(source)
+    print(f"\n📂 Source: {source}\n")
 
     print("🚀 Loading embedding model (paraphrase-multilingual-MiniLM-L12-v2)…")
     # Multilingual model chosen because content is Indonesian + English.
@@ -89,60 +112,129 @@ def build_index(force: bool = False):
         except Exception:
             pass
 
-    col   = client.get_or_create_collection(name=COLLECTION)
-    sync  = {} if force else load_sync_state()
+    col  = client.get_or_create_collection(name=COLLECTION)
+    sync = {} if force else load_sync_state()
     total_chunks = 0
     skipped = 0
     failed: list[str] = []
 
-    for meta in tqdm(posts_meta, desc="Indexing"):
+    # ── Gather posts from chosen source ───────────────────────────────────────
+    if source == "local":
+        posts_meta = _gather_local(col, sync, model, total_chunks, skipped, failed)
+        return  # _gather_local handles everything including save
+
+    # source == "scrape"
+    print("📋 Fetching article list from Medium…")
+    scraper_posts = get_scraper().get_post_list()
+    print(f"   Found {len(scraper_posts)} articles\n")
+
+    for meta in tqdm(scraper_posts, desc="Indexing"):
         url   = meta["url"]
         uid   = url_id(url)
         title = meta["title"]
 
-        # Skip if already indexed (keyed by URL hash)
         if not force and uid in sync:
             skipped += 1
             continue
 
-        # Fetch full content
-        post: Optional[dict] = scraper.get_post(url)
+        post: Optional[dict] = get_scraper().get_post(url)
         if not post or not post.get("content"):
             tqdm.write(f"⚠️  Skipping (no content): {title}")
             failed.append(url)
             continue
 
-        # Remove any stale chunks for this URL before re-adding
-        old_ids = [f"{uid}:chunk{i}" for i in range(200)]
-        try:
-            existing = col.get(ids=old_ids)
-            stale = [eid for eid in existing["ids"] if eid]
-            if stale:
-                col.delete(ids=stale)
-        except Exception:
-            pass
+        _upsert(col, model, uid, url, title, post["content"],
+                pub_date=meta.get("pub_date", ""), in_rss=meta.get("in_rss", True))
+        total_chunks += len(chunk_text(post["content"]))
+        sync[uid] = {"url": url, "title": title, "source": "scrape"}
+        tqdm.write(f"✅ {title[:55]}")
 
-        # Chunk, embed, store
-        chunks = chunk_text(post["content"])
-        for i, chunk in enumerate(chunks):
-            col.add(
-                ids=[f"{uid}:chunk{i}"],
-                embeddings=[model.encode(chunk).tolist()],
-                documents=[chunk],
-                metadatas=[{
-                    "title":    title,
-                    "url":      url,
-                    "chunk":    i,
-                    "pub_date": meta.get("pub_date", ""),
-                    "in_rss":   meta.get("in_rss", True),
-                }],
-            )
+    save_sync_state(sync)
+    _print_summary(scraper_posts, skipped, failed, total_chunks, col)
+
+
+def _gather_local(col, sync, model, total_chunks, skipped, failed):
+    """Index all non-draft local HTML files."""
+    if not POSTS_DIR.exists():
+        print(f"❌ posts directory not found: {POSTS_DIR}")
+        print("   Download your Medium export and place HTML files in data/posts/")
+        return
+
+    posts = get_local_posts()
+    print(f"📋 Found {len(posts)} local HTML articles\n")
+
+    sync = load_sync_state()
+    total_chunks = 0
+    skipped = 0
+    failed_list: list[str] = []
+
+    for p in tqdm(posts, desc="Indexing"):
+        url   = p["url"]
+        title = p["title"]
+        uid   = url_id(url)
+
+        if uid in sync:
+            skipped += 1
+            continue
+
+        content = p.get("content", "")
+        if not content:
+            tqdm.write(f"⚠️  Skipping (no content): {title}")
+            failed_list.append(url or p["filepath"].name)
+            continue
+
+        chunks = chunk_text(content)
+        _upsert(col, model, uid, url, title, content,
+                pub_date=p.get("pub_date", ""), in_rss=False)
         total_chunks += len(chunks)
-        sync[uid] = {"url": url, "title": title, "chunks": len(chunks)}
+        sync[uid] = {"url": url, "title": title, "source": "local"}
         tqdm.write(f"✅ {title[:55]}  ({len(chunks)} chunks)")
 
     save_sync_state(sync)
 
+    indexed = len(posts) - skipped - len(failed_list)
+    print(f"\n{'─'*55}")
+    print(f"  Indexed  : {indexed} articles  ({total_chunks} chunks)")
+    print(f"  Skipped  : {skipped} (already up to date)")
+    print(f"  Failed   : {len(failed_list)} (no content)")
+    print(f"  Total DB : {col.count()} chunks")
+    if failed_list:
+        print("\n  Failed:")
+        for f in failed_list:
+            print(f"    {f}")
+
+
+def _upsert(col, model, uid: str, url: str, title: str, content: str,
+            pub_date: str = "", in_rss: bool = False):
+    """Chunk, embed, and store a post in ChromaDB (replacing stale chunks)."""
+    chunks = chunk_text(content)
+
+    # Remove any stale chunks for this URL before re-adding
+    old_ids = [f"{uid}:chunk{i}" for i in range(200)]
+    try:
+        existing = col.get(ids=old_ids)
+        stale = [eid for eid in existing["ids"] if eid]
+        if stale:
+            col.delete(ids=stale)
+    except Exception:
+        pass
+
+    for i, chunk in enumerate(chunks):
+        col.add(
+            ids=[f"{uid}:chunk{i}"],
+            embeddings=[model.encode(chunk).tolist()],
+            documents=[chunk],
+            metadatas=[{
+                "title":    title,
+                "url":      url,
+                "chunk":    i,
+                "pub_date": pub_date,
+                "in_rss":   in_rss,
+            }],
+        )
+
+
+def _print_summary(posts_meta, skipped, failed, total_chunks, col):
     indexed = len(posts_meta) - skipped - len(failed)
     print(f"\n{'─'*55}")
     print(f"  Indexed  : {indexed} articles  ({total_chunks} chunks)")
@@ -186,7 +278,7 @@ def audit():
         stats[url]["chars"]  += len(docs[i])
 
     ranked = sorted(stats.items(), key=lambda x: x[1]["chars"], reverse=True)
-    rss_marker = lambda v: "  " if v["in_rss"] else "🔒"
+    rss_marker = lambda v: "  " if v["in_rss"] else "📄"
 
     print(f"Posts : {len(stats)}")
     print(f"Chunks: {len(docs)}\n")
@@ -200,13 +292,17 @@ def audit():
     thin = [s for s, d in stats.items() if d["chunks"] < 2 and d["chars"] < 500]
     if thin:
         print(f"\n⚠️  {len(thin)} posts with very thin content")
-    print("\n🔒 = not in RSS feed (member-only or unlisted)")
+    print("\n📄 = indexed from local HTML export")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Medium blog index builder")
+    ap.add_argument("--source", choices=["local", "scrape"],
+                    help="'local' = read from data/posts/ HTML files; "
+                         "'scrape' = fetch live from Medium (sitemap+RSS). "
+                         "Prompted interactively if omitted.")
     ap.add_argument("--force",       action="store_true",
                     help="Wipe and rebuild entire index from scratch")
     ap.add_argument("--audit",       action="store_true",
@@ -218,4 +314,4 @@ if __name__ == "__main__":
     if args.audit:
         audit()
     else:
-        build_index(force=args.force)
+        build_index(force=args.force, source=args.source)
