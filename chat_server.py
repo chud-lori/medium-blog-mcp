@@ -183,7 +183,7 @@ def stream_gemini(messages: list[dict], context: str) -> Iterator[str]:
         return
 
     client     = genai.Client(api_key=key)
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
     system     = f"{SYSTEM_PROMPT}\n\n<articles>\n{context}\n</articles>"
 
     # Build contents list from full history
